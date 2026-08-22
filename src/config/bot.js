@@ -11,7 +11,7 @@ export const botConfig = {
   // - "invisible" = appears offline
   presence: {
     // Current online state shown on Discord.
-    status: "online",
+    status: "dnd",
 
     // Activity lines shown under the bot name.
     // `type` number mapping from Discord:
@@ -24,7 +24,7 @@ export const botConfig = {
     activities: [
       {
         name: "Custom Status", // required by Discord API, not shown in the client
-        state: "stalking",     // this is what people actually see
+        state: "Antbrix is an UNC",     // this is what people actually see
         type: 4,               // Custom
       },
     ],
@@ -141,7 +141,7 @@ export const botConfig = {
     },
     footer: {
       // Default footer text used in bot embeds.
-      text: "Titan Bot",
+      text: "BillySMP Core",
       // Footer icon URL (null = no icon).
       icon: null,
     },
@@ -161,18 +161,18 @@ export const botConfig = {
   economy: {
     currency: {
       // Currency display name.
-      name: "coins",
+      name: "b-bucks",
       // Plural display name.
-      namePlural: "coins",
+      namePlural: "b-bucks",
       // Currency symbol shown in balances.
       symbol: "$",
     },
 
     // Starting balance for new users.
-    startingBalance: 0,
+    startingBalance: 250,
 
     // Maximum bank amount before upgrades (if upgrades are used).
-    baseBankCapacity: 100000,
+    baseBankCapacity: 100000000000000000,
 
     // Daily reward amount.
     dailyAmount: 100,
