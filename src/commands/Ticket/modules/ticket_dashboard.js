@@ -8,7 +8,6 @@ import {
     TextInputStyle,
     RoleSelectMenuBuilder,
     ChannelSelectMenuBuilder,
-    UserSelectMenuBuilder,
     ButtonBuilder,
     ButtonStyle,
     ChannelType,
@@ -22,10 +21,8 @@ import { logger } from '../../../utils/logger.js';
 import { TitanBotError, ErrorTypes, replyUserError } from '../../../utils/errorHandler.js';
 import { getGuildConfig, setGuildConfig } from '../../../services/config/guildConfig.js';
 import { getGuildTicketStats } from '../../../utils/database/tickets.js';
-import { getUserTicketCount } from '../../../services/ticket.js';
 import {
     getTicketPanelStatus,
-    messageHasButtonCustomId,
     formatPanelStatusField,
 } from '../../../utils/panelStatus.js';
 import { startDashboardSession } from '../../../utils/dashboardSession.js';
@@ -718,7 +715,7 @@ async function handleLogsChannel(selectInteraction, rootInteraction, guildConfig
         embeds: [
             new EmbedBuilder()
                 .setTitle('🎫 Select Ticket Logs Channel')
-                .setDescription('Choose where ticket feedback, lifecycle events (open, close, claim, etc.), and other logs will be sent.')
+                .setDescription('Choose where ticket feedback, lifecycle events, and other logs will be sent.')
                 .setColor(getColor('info')),
         ],
         components: [new ActionRowBuilder().addComponents(channelSelect)],
@@ -770,18 +767,18 @@ async function handleTranscriptChannel(selectInteraction, rootInteraction, guild
         embeds: [
             new EmbedBuilder()
                 .setTitle('📜 Select Transcript Channel')
-                .setDescription('Choose where auto-generated transcripts will be sent when tickets are deleted.')
-                .setColor(getColor('info'))
+                .setDescription('Choose where auto-generated transcripts will be sent upon ticket deletion.')
+                .setColor(getColor('info')),
         ],
         components: [new ActionRowBuilder().addComponents(channelSelect)],
-        flags: MessageFlags.Ephemeral
+        flags: MessageFlags.Ephemeral,
     });
 
     const collector = rootInteraction.channel.createMessageComponentCollector({
         componentType: ComponentType.ChannelSelect,
         filter: i => i.user.id === selectInteraction.user.id && i.customId === 'ticket_cfg_transcript_channel',
         time: 60_000,
-        max: 1
+        max: 1,
     });
 
     collector.on('collect', async channelInteraction => {
@@ -792,8 +789,8 @@ async function handleTranscriptChannel(selectInteraction, rootInteraction, guild
         await setGuildConfig(client, guildId, guildConfig);
 
         await channelInteraction.followUp({
-            embeds: [successEmbed('Transcript Channel Updated', `Transcripts will be sent to ${channel}`)],
-            flags: MessageFlags.Ephemeral
+            embeds: [successEmbed('Transcript Channel Updated', `Ticket transcripts will be sent to ${channel}`)],
+            flags: MessageFlags.Ephemeral,
         });
 
         await refreshDashboard(rootInteraction, guildConfig, guildId, client);
@@ -809,212 +806,39 @@ async function handleTranscriptChannel(selectInteraction, rootInteraction, guild
     });
 }
 
-async function handleCheckUser(selectInteraction, rootInteraction, guildConfig, guildId, client) {
-    await selectInteraction.deferUpdate();
-
-    const userSelect = new UserSelectMenuBuilder()
-        .setCustomId('ticket_cfg_check_user')
-        .setPlaceholder('Select a user to check...')
-        .setMaxValues(1);
-
-    const row = new ActionRowBuilder().addComponents(userSelect);
-
-    await selectInteraction.followUp({
-        embeds: [
-            new EmbedBuilder()
-                .setTitle('Check User Tickets')
-                .setDescription('Select a user to view their current open ticket count.')
-                .setColor(getColor('info')),
-        ],
-        components: [row],
-        flags: MessageFlags.Ephemeral,
-    });
-
-    const userCollector = rootInteraction.channel.createMessageComponentCollector({
-        componentType: ComponentType.UserSelect,
-        filter: i =>
-            i.user.id === selectInteraction.user.id && i.customId === 'ticket_cfg_check_user',
-        time: 60_000,
-        max: 1,
-    });
-
-    userCollector.on('collect', async userInteraction => {
-        await userInteraction.deferUpdate();
-        const targetUser = userInteraction.users.first();
-        const maxTickets = guildConfig.maxTicketsPerUser || 3;
-        const openCount = await getUserTicketCount(guildId, targetUser.id);
-        const atLimit = openCount >= maxTickets;
-
-        await userInteraction.followUp({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(`Ticket Check — ${targetUser.username}`)
-                    .setDescription(
-                        `**Open Tickets:** ${openCount} / ${maxTickets}\n` +
-                            `**Remaining:** ${Math.max(0, maxTickets - openCount)}\n\n` +
-                            (atLimit
-                                ? '⚠️ This user has reached their ticket limit.'
-                                : '✅ This user can still open more tickets.'),
-                    )
-                    .setColor(atLimit ? getColor('error') : getColor('success'))
-                    .setThumbnail(targetUser.displayAvatarURL({ size: 64 }))
-                    .setTimestamp(),
-            ],
-            flags: MessageFlags.Ephemeral,
-        });
-    });
-
-    userCollector.on('end', (collected, reason) => {
-        if (reason === 'time' && collected.size === 0) {
-            replyUserError(selectInteraction, {
-                type: ErrorTypes.RATE_LIMIT,
-                message: 'No user was selected.',
-            }).catch(() => {});
-        }
-    });
-}
-
 async function handleRepostPanel(btnInteraction, rootInteraction, guildConfig, guildId, client) {
     await btnInteraction.deferUpdate();
-
-    const panelStatus = await getTicketPanelStatus(client, rootInteraction.guild, guildConfig);
-    if (panelStatus.exists) {
+    try {
+        await repostTicketPanel(client, rootInteraction.guild, guildConfig, guildId);
         await btnInteraction.followUp({
-            embeds: [infoEmbed('Panel Already Active', 'The ticket panel is already posted in the configured channel.')],
+            embeds: [successEmbed('Panel Reposted', 'The ticket panel has been successfully reposted to its channel.')],
             flags: MessageFlags.Ephemeral,
-        }).catch(() => {});
+        });
         await refreshDashboard(rootInteraction, guildConfig, guildId, client);
-        return;
+    } catch (error) {
+        await replyUserError(btnInteraction, {
+            type: ErrorTypes.CONFIGURATION,
+            message: error.message || 'Failed to repost the ticket panel.',
+        });
     }
-
-    const sentPanel = await repostTicketPanel(client, rootInteraction.guild, guildConfig, guildId);
-
-    await btnInteraction.followUp({
-        embeds: [
-            successEmbed(
-                'Panel Reposted',
-                `A new ticket panel was posted in <#${guildConfig.ticketPanelChannelId}>.${
-                    sentPanel.url ? `\n[Open panel message](${sentPanel.url})` : ''
-                }`,
-            ),
-        ],
-        flags: MessageFlags.Ephemeral,
-    }).catch(() => {});
-
-    await refreshDashboard(rootInteraction, guildConfig, guildId, client);
 }
 
 async function handleDeleteSystem(btnInteraction, rootInteraction, guildConfig, guildId, client) {
-    const deleteModal = new ModalBuilder()
-        .setCustomId('ticket_delete_confirm_modal')
-        .setTitle('Delete Ticket System')
-        .addComponents(
-            new ActionRowBuilder().addComponents(
-                new TextInputBuilder()
-                    .setCustomId('delete_confirmation')
-                    .setLabel('Type "DELETE" to confirm')
-                    .setStyle(TextInputStyle.Short)
-                    .setPlaceholder('DELETE')
-                    .setMaxLength(6)
-                    .setMinLength(6)
-                    .setRequired(true)
-            )
-        );
-
-    await btnInteraction.showModal(deleteModal);
-
-    const submitted = await btnInteraction
-        .awaitModalSubmit({
-            filter: i => i.customId === 'ticket_delete_confirm_modal' && i.user.id === btnInteraction.user.id,
-            time: 120_000,
-        })
-        .catch(() => null);
-
-    if (!submitted) {
-        await refreshDashboard(rootInteraction, guildConfig, guildId, client);
-        return;
-    }
-
-    const confirmation = submitted.fields.getTextInputValue('delete_confirmation').trim();
-
-    if (confirmation !== 'DELETE') {
-        await replyUserError(submitted, { type: ErrorTypes.UNKNOWN, message: 'You must type "DELETE" exactly to confirm deletion.' });
-        await refreshDashboard(rootInteraction, guildConfig, guildId, client);
-        return;
-    }
-
-    await submitted.deferUpdate();
-
-    const keysToDelete = [
-        'ticketPanelChannelId',
-        'ticketPanelMessageId',
-        'ticketStaffRoleId',
-        'ticketCategoryId',
-        'ticketClosedCategoryId',
-        'ticketPanelMessage',
-        'ticketButtonLabel',
-        'maxTicketsPerUser',
-        'dmOnClose',
-    ];
-
-    if (guildConfig.ticketPanelChannelId) {
-        try {
-            const panelChannel = await client.guilds.cache.get(guildId)?.channels.fetch(guildConfig.ticketPanelChannelId).catch(() => null);
-            if (panelChannel) {
-                if (guildConfig.ticketPanelMessageId) {
-                    const panelMessage = await panelChannel.messages.fetch(guildConfig.ticketPanelMessageId).catch(() => null);
-                    if (panelMessage) await panelMessage.delete().catch(() => {});
-                } else {
-                    
-                    const messages = await panelChannel.messages.fetch({ limit: 50 }).catch(() => null);
-                    if (messages) {
-                        const found = messages.find(
-                            m => m.author.id === client.user.id && messageHasButtonCustomId(m, 'create_ticket'),
-                        );
-                        if (found) await found.delete().catch(() => {});
-                    }
-                }
-            }
-        } catch (panelDeleteError) {
-            logger.warn('Could not delete ticket panel message:', panelDeleteError.message);
-        }
-    }
-
-    try {
-        const { pgConfig } = await import('../../../config/database/postgres.js');
-        if (client.db?.db?.pool && typeof client.db.db.isAvailable === 'function' && client.db.db.isAvailable()) {
-            await client.db.db.pool.query(
-                `DELETE FROM ${pgConfig.tables.tickets} WHERE guild_id = $1`,
-                [guildId]
-            );
-        }
-    } catch (ticketDeleteError) {
-        logger.warn('Could not clear ticket records from database:', ticketDeleteError.message);
-    }
-
-    for (const key of keysToDelete) {
-        delete guildConfig[key];
-    }
+    await btnInteraction.deferUpdate();
+    
+    guildConfig.ticketPanelChannelId = null;
+    guildConfig.ticketPanelMessageId = null;
+    guildConfig.ticketStaffRoleId = null;
     await setGuildConfig(client, guildId, guildConfig);
 
-    await submitted.followUp({
-        embeds: [
-            successEmbed(
-                '✅ Ticket System Deleted',
-                'All ticket system configuration has been cleared. Run `/ticket setup` to set it up again.',
-            ),
-        ],
+    await btnInteraction.followUp({
+        embeds: [successEmbed('System Reset', 'Ticket system configurations have been cleared.')],
         flags: MessageFlags.Ephemeral,
     });
-
+    
     await InteractionHelper.safeEditReply(rootInteraction, {
-        embeds: [
-            new EmbedBuilder()
-                .setTitle('Ticket System Deleted')
-                .setDescription('The ticket system configuration has been cleared.')
-                .setColor(getColor('error'))
-                .setTimestamp(),
-        ],
+        content: '*(This ticket dashboard session has been closed due to system deletion.)*',
+        embeds: [],
         components: [],
-    }).catch(() => {});
+    });
 }
